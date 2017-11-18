@@ -42,13 +42,13 @@ class strLabelConverter(object):
         if isinstance(text, str):
             text = [
                 self.dict[char.lower() if self._ignore_case else char]
-                for char in text
+                for char in text.decode('gbk')
             ]
             length = [len(text)]
         elif isinstance(text, collections.Iterable):
             length = [len(s) for s in text]
             text = ''.join(text)
-            text, _ = self.encode(text)
+            text, _ = self.encode(text.encode('gbk'))
         return (torch.IntTensor(text), torch.IntTensor(length))
 
     def decode(self, t, length, raw=False):

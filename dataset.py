@@ -9,9 +9,98 @@ import torchvision.transforms as transforms
 import lmdb
 import six
 import sys
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
+import os
 import numpy as np
 
+DEBUG = False
+
+class textDataset(Dataset):
+    def __init__(self, datalist, fonts, font_sizes="35-42", transform=None):
+        '''Initialization of textDataset
+        args
+        bg_path: (string) background image path, if is None, use white background
+        fonts: (string) font file path, multi fonts is seperated by ','
+        font_sizes: (string) text font size range, "min_size - max_size"
+        '''
+        font_sizes = font_sizes.split('-')
+        self.font_sizes = range(int(font_sizes[0]), int(font_sizes[1]))
+        self.fonts = fonts.split(',')
+        self.alphabet = keys.alphabet
+        self.transform = transform
+        text_samples = []
+        with open(datalist,'r') as f:
+            for line in f:
+                text_samples.append(line.strip())
+        self.text_samples = text_samples
+
+        self.nSamples = len(self.text_samples)
+        self.punctuation = ['-','<','>',',',':','[',']',',','”','"','#',
+                            '!','！','|',';','.','/','%','*','(',')','?','？',
+                            '、','&','￡','￥','$','￠','》','{','}','//',
+                            '〒','=','÷','′','’','〈','〖','〔','〉',
+                            '〗','±','§','+','^','_','}','~','】',
+                            '\\','“','『','。','丨','』','‘','【','〕',
+                            'ˉ','°','《','`','」','「','\'']
+
+
+    def __len__(self):
+        return self.nSamples
+
+
+    def _generate_sample(self, index):
+        txt1 = self.text_samples[index]
+        choice = random.randint(1, 7)
+        # 7 choices:
+        # 1: word
+        # 2: word + p(punctuation)
+        # 3: p + word
+        # 4: word1 + p + word2
+        if choice == 1:
+            sample = txt1
+        elif choice == 2:
+            p = random.choice(self.punctuation)
+            sample = txt1 + p
+        elif choice == 3:
+            p = random.choice(self.punctuation)
+            sample = p + txt1
+        else:
+            p = random.choice(self.punctuation)
+            txt2 = random.choice(self.text_samples)
+            sample = txt1 + p + txt2
+
+        # If the char is not in the keys, randomly replace it
+        textdata = ""
+        for o_char in sample.decode('utf-8'):
+            if self.alphabet.find(o_char) == -1:
+                o_char = random.choice(self.alphabet) #self.alphabet[random.randint(0, len(self.alphabet)-1)]
+            textdata += o_char
+
+        return textdata
+
+
+    def __getitem__(self, index):
+        index = index % self.nSamples
+
+        text = self._generate_sample(index)
+        # initialize font
+        font = random.choice(self.fonts)
+        font_size = random.choice(self.font_sizes)
+        font = ImageFont.truetype(font,font_size)
+
+        text_w, text_h = font.getsize(text)
+        bg = Image.new("RGB", (text_w, text_h), "white")
+        image = ImageDraw.Draw(bg)
+        image.text((0, 0), text, font=font, fill='black')
+        bg = bg.convert('L')
+
+        if DEBUG:
+            bg.save(os.path.join('data/debug/', str(index) + '_' + text + ".JPEG"))
+
+        if self.transform is not None:
+            bg = self.transform(bg)
+
+        return (bg, ''.join(text))
 
 class lmdbDataset(Dataset):
 
