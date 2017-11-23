@@ -12,6 +12,7 @@ import sys
 from PIL import Image, ImageDraw, ImageFont
 import os
 import numpy as np
+import models.keys as keys
 
 DEBUG = False
 
@@ -35,13 +36,11 @@ class textDataset(Dataset):
         self.text_samples = text_samples
 
         self.nSamples = len(self.text_samples)
-        self.punctuation = ['-','<','>',',',':','[',']',',','”','"','#',
-                            '!','！','|',';','.','/','%','*','(',')','?','？',
-                            '、','&','￡','￥','$','￠','》','{','}','//',
-                            '〒','=','÷','′','’','〈','〖','〔','〉',
-                            '〗','±','§','+','^','_','}','~','】',
-                            '\\','“','『','。','丨','』','‘','【','〕',
-                            'ˉ','°','《','`','」','「','\'']
+        self.punctuation = [',','。','<','>','@',':','“','”','"','\'','~',
+                            '《','》','[',']','#','=','±','+','_','-','°',
+                            '!','！',';','.','/','%','*','(',')','?','？',
+                            '、','￡','￥','$','〈','〉','{','}','//','\\']
+        self.digits = ['0','1','2','3','4','5','6','7','8','9']
 
 
     def __len__(self):
@@ -50,24 +49,32 @@ class textDataset(Dataset):
 
     def _generate_sample(self, index):
         txt1 = self.text_samples[index]
-        choice = random.randint(1, 7)
-        # 7 choices:
-        # 1: word
-        # 2: word + p(punctuation)
-        # 3: p + word
-        # 4: word1 + p + word2
-        if choice == 1:
+        while txt1 == "":
+            print("txt is empty,random get one")
+            txt1 = random.choice(self.text_samples)
+        choice = random.randint(1, 8)
+        # 5 choices:
+        # 1-4: word
+        # 5: word + p(punctuation)
+        # 6: p + word
+        # 7: word1 + p + word2
+        # 8: digit + p + word
+        if choice <=4:
             sample = txt1
-        elif choice == 2:
+        elif choice == 5:
             p = random.choice(self.punctuation)
             sample = txt1 + p
-        elif choice == 3:
+        elif choice == 6:
             p = random.choice(self.punctuation)
             sample = p + txt1
-        else:
+        elif choice == 7:
             p = random.choice(self.punctuation)
             txt2 = random.choice(self.text_samples)
             sample = txt1 + p + txt2
+        else:
+            p = random.choice(self.punctuation)
+            digit = random.choice(self.digits)
+            sample = digit + p + txt1
 
         # If the char is not in the keys, randomly replace it
         textdata = ""

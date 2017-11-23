@@ -1,17 +1,16 @@
 VER=1
 
-CUDA_VISIBLE_DEVICES=0 python crnn_train.py \
+CUDA_VISIBLE_DEVICES=1 python crnn_test.py \
                         --cuda \
                         --experiment outputs/CRNN_v$VER \
-                        --workers 1 \
-                        --niter 10 \
+                        --workers 0 \
+                        --niter 30 \
                         --displayInterval 1 \
-                        --saveInterval 1000 \
-                        --lr 0.00005 \
-                        --crnn models/netCRNN63.pth \
+                        --lr 0.001 \
+                        --crnn outputs/CRNN_v1/netCRNN_0_43000.pth \
                         --font_path fonts/kaiti.ttf,fonts/songti.TTF,fonts/songticu.ttf,fonts/xiyuan.ttf,fonts/yahei.TTF,fonts/zhengheiti.ttf \
                         --fontsize 20-48 \
-                        --train_list data/train_text.txt \
+                        --val_list data/val_text.txt \
                         --random_sample \
                         --imgH 32 \
                         --imgW 100 \

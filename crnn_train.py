@@ -106,7 +106,19 @@ crnn = crnn.CRNN(opt.imgH, nc, nclass, opt.nh)
 crnn.apply(weights_init)
 if opt.crnn != '':
     print('loading pretrained model from %s' % opt.crnn)
-    crnn.load_state_dict(torch.load(opt.crnn))
+    pretrained_dict = torch.load(opt.crnn)
+    model_dict = crnn.state_dict()
+
+    pretrained_load_dict = dict()
+    for k,v in pretrained_dict.items():
+        if "rnn.1" in k:
+            continue
+        pretrained_load_dict[k] = v
+
+    #pretrained_dict = {k:v for k,v in pretrained_dict.items() if k in model_dict}
+    model_dict.update(pretrained_load_dict)
+    crnn.load_state_dict(model_dict)
+
 print(crnn)
 
 image = torch.FloatTensor(opt.batchSize, 3, opt.imgH, opt.imgH)
@@ -136,15 +148,13 @@ else:
     optimizer = optim.RMSprop(crnn.parameters(), lr=opt.lr)
 
 
-def val(net, dataset, criterion, max_iter=100):
+def val(net, data_loader, criterion, max_iter=100):
     print('Start val')
 
     for p in crnn.parameters():
         p.requires_grad = False
 
     net.eval()
-    data_loader = torch.utils.data.DataLoader(
-        dataset, shuffle=True, batch_size=opt.batchSize, num_workers=int(opt.workers))
     val_iter = iter(data_loader)
 
     i = 0
@@ -168,7 +178,7 @@ def val(net, dataset, criterion, max_iter=100):
         loss_avg.add(cost)
 
         _, preds = preds.max(2)
-        preds = preds.squeeze(2)
+        #preds = preds.squeeze(2)
         preds = preds.transpose(1, 0).contiguous().view(-1)
         sim_preds = converter.decode(preds.data, preds_size.data, raw=False)
         for pred, target in zip(sim_preds, cpu_texts):
@@ -223,7 +233,7 @@ for epoch in range(opt.niter):
 
     # do validation
     if opt.val_list is not None:
-        val(crnn, val_dataset, criterion)
+        val(crnn, val_loader, criterion)
 
     # do checkpointing
     torch.save(
