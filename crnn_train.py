@@ -104,6 +104,16 @@ def weights_init(m):
 
 crnn = crnn.CRNN(opt.imgH, nc, nclass, opt.nh)
 crnn.apply(weights_init)
+
+image = torch.FloatTensor(opt.batchSize, 3, opt.imgH, opt.imgH)
+text = torch.IntTensor(opt.batchSize * 5)
+length = torch.IntTensor(opt.batchSize)
+if opt.cuda:
+    crnn.cuda()
+    crnn = torch.nn.DataParallel(crnn, device_ids=range(opt.ngpu))
+    image = image.cuda()
+    criterion = criterion.cuda()
+
 if opt.crnn != '':
     print('loading pretrained model from %s' % opt.crnn)
     pretrained_dict = torch.load(opt.crnn)
@@ -118,18 +128,7 @@ if opt.crnn != '':
     #pretrained_dict = {k:v for k,v in pretrained_dict.items() if k in model_dict}
     model_dict.update(pretrained_load_dict)
     crnn.load_state_dict(model_dict)
-
 print(crnn)
-
-image = torch.FloatTensor(opt.batchSize, 3, opt.imgH, opt.imgH)
-text = torch.IntTensor(opt.batchSize * 5)
-length = torch.IntTensor(opt.batchSize)
-
-if opt.cuda:
-    crnn.cuda()
-    crnn = torch.nn.DataParallel(crnn, device_ids=range(opt.ngpu))
-    image = image.cuda()
-    criterion = criterion.cuda()
 
 image = Variable(image)
 text = Variable(text)
@@ -185,11 +184,11 @@ def val(net, data_loader, criterion, max_iter=100):
             if pred == target.lower():
                 n_correct += 1
 
-    raw_preds = converter.decode(preds.data, preds_size.data, raw=True)[:opt.n_test_disp]
-    for raw_pred, pred, gt in zip(raw_preds, sim_preds, cpu_texts):
+    #raw_preds = converter.decode(preds.data, preds_size.data, raw=True)[:opt.n_test_disp]
+    for pred, gt in zip(sim_preds, cpu_texts):
         print(pred)
         print(gt)
-        print('-'*20)
+        print('-' * 20)
         #print('%-20s => %-20s, gt: %-20s' % (raw_pred, pred, gt))
 
     accuracy = n_correct / float(max_iter * opt.batchSize)
@@ -231,10 +230,11 @@ for epoch in range(opt.niter):
                   (epoch, opt.niter, i, len(train_loader), loss_avg.val()))
             loss_avg.reset()
 
-    # do validation
-    if opt.val_list is not None:
-        val(crnn, val_loader, criterion)
+        # do checkpointing
+        if i % opt.saveInterval == 0:
+            torch.save(
+                crnn.state_dict(), '{0}/netCRNN_{1}_{2}.pth'.format(opt.experiment, epoch, i))
 
-    # do checkpointing
-    torch.save(
-        crnn.state_dict(), '{0}/netCRNN_{1}_{2}.pth'.format(opt.experiment, epoch, i))
+        # do validation
+        if opt.val_list is not None and i % opt.valInterval == 0:
+            val(crnn, val_loader, criterion)
