@@ -91,7 +91,7 @@ def weights_init(m):
         m.bias.data.fill_(0)
 
 
-crnn = crnn.CRNN(opt.imgH, nc, nclass, opt.nh)
+crnn = crnn.CRNN(opt.imgH, nc, nclass)
 crnn.apply(weights_init)
 if opt.crnn != '':
     if not opt.resume:
@@ -148,9 +148,7 @@ else:
     optimizer = optim.RMSprop(crnn.parameters(), lr=opt.lr)
 
 
-def val(net, dataset, criterion, max_iter=100):
-    print('Start val')
-
+def val(net, dataset, criterion):
     for p in crnn.parameters():
         p.requires_grad = False
 
@@ -160,10 +158,9 @@ def val(net, dataset, criterion, max_iter=100):
     val_iter = iter(data_loader)
 
     i = 0
-    n_correct = 0
     loss_avg = utils.averager()
 
-    max_iter = min(max_iter, len(data_loader))
+    max_iter = len(data_loader)
     for i in range(max_iter):
         data = val_iter.next()
         i += 1
@@ -178,28 +175,21 @@ def val(net, dataset, criterion, max_iter=100):
         cost = criterion(preds, text, preds_size, length) / batch_size
         loss_avg.add(cost)
         _, preds = preds.max(2)
-        #preds = preds.squeeze()
         preds = preds.transpose(1, 0).contiguous().view(-1)
         sim_preds = converter.decode(preds.data, preds_size.data, raw=False)
+        char_accuracy, whole_accuracy = compute_accuracy(cpu_texts, sim_preds)
+
+        print('[%d/%d] val_loss: %.5f, char_accuracy:  %.5f, whole_accuracy: %.5f' %
+              (i, max_iter, cost, char_accuracy, whole_accuracy))
+        display_count = 0
         for pred, target in zip(sim_preds, cpu_texts):
-            if pred == target.lower():
-                n_correct += 1
-
-    raw_preds = converter.decode(preds.data, preds_size.data, raw=True)[:opt.n_test_disp]
-    for raw_pred, pred, gt in zip(raw_preds, sim_preds, cpu_texts):
-        try:
-            print(pred)
-            print(gt)
-            print('-' * 20)
-        except Exception as e:
-            print('cannot print:',str(e))
-            continue
-
-    accuracy = n_correct / float(max_iter * opt.batchSize)
-    print('Test loss: %f, accuray: %f' % (loss_avg.val(), accuracy))
+            print('%-20s, gt: %-20s' % (pred.encode('utf-8'), target.encode('utf-8')))
+            display_count += 1
+            if display_count >opt.n_test_disp:
+                break
 
 
-def trainBatch(net, criterion, optimizer):
+def trainBatch(net, criterion, optimizer, epoch, batch_idx, batch_num, decode=True):
     data = train_iter.next()
     cpu_images, cpu_texts = data
     batch_size = cpu_images.size(0)
@@ -208,32 +198,74 @@ def trainBatch(net, criterion, optimizer):
     utils.loadData(text, t)
     utils.loadData(length, l)
 
-    preds = crnn(image)
+    preds = net(image)
     preds_size = Variable(torch.IntTensor([preds.size(0)] * batch_size))
     cost = criterion(preds, text, preds_size, length) / batch_size
+
+    if decode:
+        _, preds = preds.max(2)
+        preds = preds.transpose(1, 0).contiguous().view(-1)
+        sim_preds = converter.decode(preds.data, preds_size.data, raw=False)
+        char_accuracy, whole_accuracy = compute_accuracy(cpu_texts,sim_preds)
+
+        print('[%d][%d/%d] lr:%.5f, train_loss: %.5f, char_accuracy:  %.5f, whole_accuracy: %.5f' %
+              (epoch, batch_idx, batch_num, optimizer.param_groups[-1]['lr'], cost, char_accuracy, whole_accuracy))
+
+
     crnn.zero_grad()
     cost.backward()
     optimizer.step()
     return cost
 
+def compute_accuracy(ground_truth, predictions):
+    """ Computes accuracy
+    :param ground_truth:
+    :param predictions:
+    :return:
+    """
+    char_accuracy = []
+    whole_accuracy = []
+
+    for index, label in enumerate(ground_truth):
+        prediction = predictions[index]
+        if label == prediction:
+            whole_accuracy.append(1)
+        else:
+            whole_accuracy.append(0)
+
+        total_count = len(label)
+        correct_count = 0
+        try:
+            for i, tmp in enumerate(label):
+                if tmp == prediction[i]:
+                    correct_count += 1
+        except IndexError:
+            continue
+        finally:
+            try:
+                char_accuracy.append(correct_count / total_count)
+            except ZeroDivisionError:
+                if len(prediction) == 0:
+                    char_accuracy.append(1)
+                else:
+                    char_accuracy.append(0)
+
+    char_accuracy = np.mean(np.array(char_accuracy).astype(np.float32), axis=0)
+    whole_accuracy = np.mean(np.array(whole_accuracy).astype(np.float32), axis=0)
+
+    return char_accuracy, whole_accuracy
+
 
 for epoch in range(opt.niter):
     val(crnn, test_dataset, criterion)
     train_iter = iter(train_loader)
-    i = 0
-    while i < len(train_loader):
+    for i in range(len(train_loader)):
         for p in crnn.parameters():
             p.requires_grad = True
         crnn.train()
 
-        cost = trainBatch(crnn, criterion, optimizer)
+        cost = trainBatch(crnn, criterion, optimizer, epoch, i, len(train_loader))
         loss_avg.add(cost)
-        i += 1
-
-        if i % opt.displayInterval == 0:
-            print('[%d/%d][%d/%d] lr:%.5f, Loss: %f' %
-                  (epoch, opt.niter, i, len(train_loader), optimizer.param_groups[-1]['lr'], loss_avg.val()))
-            loss_avg.reset()
 
         if i % opt.valInterval == 0:
             val(crnn, test_dataset, criterion)

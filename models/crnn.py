@@ -3,7 +3,7 @@ import torch.nn as nn
 
 class CRNN(nn.Module):
 
-    def __init__(self, imgH, nc, nclass, nh, n_rnn=2, leakyRelu=False):
+    def __init__(self, imgH, nc, nclass, leakyRelu=False):
         super(CRNN, self).__init__()
         assert imgH % 16 == 0, 'imgH has to be a multiple of 16'
 
@@ -28,18 +28,18 @@ class CRNN(nn.Module):
                 cnn.add_module('relu{0}'.format(i), nn.ReLU(True))
 
         convRelu(0)
-        cnn.add_module('pooling{0}'.format(0), nn.MaxPool2d(2, 2))  # 64x16x64
+        cnn.add_module('pooling{0}'.format(0), nn.MaxPool2d(2, 2))  # batchsizex64x16x50
         convRelu(1)
-        cnn.add_module('pooling{0}'.format(1), nn.MaxPool2d(2, 2))  # 128x8x32
+        cnn.add_module('pooling{0}'.format(1), nn.MaxPool2d(2, 2))  # batchsizex128x8x25
         convRelu(2, True)
         convRelu(3)
         cnn.add_module('pooling{0}'.format(2),
-                       nn.MaxPool2d((2, 2), (2, 1), (0, 1)))  # 256x4x16
+                       nn.MaxPool2d((2, 2), (2, 1), (0, 1)))  # batchsizex256x4x25
         convRelu(4, True)
         convRelu(5)
         cnn.add_module('pooling{0}'.format(3),
-                       nn.MaxPool2d((2, 2), (2, 1), (0, 1)))  # 512x2x16
-        convRelu(6, True)  # 512x1x16
+                       nn.MaxPool2d((2, 2), (2, 1), (0, 1)))  # batchsizex512x1x25
+        convRelu(6, True)
 
         self.cnn = cnn
         self.embedding = nn.Linear(512, nclass)
@@ -49,10 +49,9 @@ class CRNN(nn.Module):
         conv = self.cnn(input)
         b, c, h, w = conv.size()
         assert h == 1, "the height of conv must be 1"
-        conv = conv.squeeze(2)
-        conv = conv.permute(2, 0, 1)  # [w, b, c]
-        output = self.embedding(conv)
-
+        conv = conv.squeeze(2) # batchsize x 512 x 25
+        conv = conv.permute(2, 0, 1)  # 25 x batchsize x 512
+        output = self.embedding(conv) # 25 x batchsize x class_num
 
         return output
 
