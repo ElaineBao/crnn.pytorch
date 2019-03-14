@@ -229,7 +229,7 @@ def compute_accuracy(ground_truth, predictions):
     for index, label in enumerate(ground_truth):
         prediction = predictions[index]
         label = label.decode('utf-8')
-        if label == prediction:
+        if label.lower() == prediction.lower():
             whole_accuracy.append(1)
         else:
             whole_accuracy.append(0)
