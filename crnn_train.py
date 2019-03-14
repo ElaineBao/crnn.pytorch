@@ -11,16 +11,15 @@ from warpctc_pytorch import CTCLoss
 import os
 import utils
 import dataset
-import models.crnn as crnn
-import models.keys as keys
 import sys
 reload(sys)
 sys.setdefaultencoding('utf8')
-
+import models.crnn as crnn
+import models.keys as keys
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--train_list', type=str, default='data/train-ciku.txt', help='train text data list')
-parser.add_argument('--val_list', type=str, default=None, help='val text data list')
+parser.add_argument('--trainroot', required=True, help='path to dataset')
+parser.add_argument('--valroot', required=True, help='path to dataset')
 parser.add_argument('--workers', type=int, help='number of data loading workers', default=2)
 parser.add_argument('--batchSize', type=int, default=64, help='input batch size')
 parser.add_argument('--imgH', type=int, default=32, help='the height of the input image to network')
@@ -38,13 +37,11 @@ parser.add_argument('--displayInterval', type=int, default=500, help='Interval t
 parser.add_argument('--n_test_disp', type=int, default=10, help='Number of samples to display when test')
 parser.add_argument('--valInterval', type=int, default=500, help='Interval to be displayed')
 parser.add_argument('--saveInterval', type=int, default=500, help='Interval to be displayed')
+parser.add_argument('--resume', action='store_true', help='Resume from crnn model')
 parser.add_argument('--adam', action='store_true', help='Whether to use adam (default is rmsprop)')
 parser.add_argument('--adadelta', action='store_true', help='Whether to use adadelta (default is rmsprop)')
 parser.add_argument('--keep_ratio', action='store_true', help='whether to keep ratio for image resize')
 parser.add_argument('--random_sample', action='store_true', help='whether to sample the dataset with random sampler')
-parser.add_argument('--font_path', help='path to font, multi fonts is seperated by ,')
-parser.add_argument('--fontsize', type=str, default="35-42", help='font size range')
-
 opt = parser.parse_args()
 print(opt)
 
@@ -52,7 +49,6 @@ if opt.experiment is None:
     opt.experiment = 'expr'
 if not os.path.exists(opt.experiment):
     os.makedirs(opt.experiment)
-
 opt.manualSeed = random.randint(1, 10000)  # fix seed
 print("Random Seed: ", opt.manualSeed)
 random.seed(opt.manualSeed)
@@ -64,7 +60,7 @@ cudnn.benchmark = True
 if torch.cuda.is_available() and not opt.cuda:
     print("WARNING: You have a CUDA device, so you should probably run with --cuda")
 
-train_dataset = dataset.textDataset(opt.train_list, opt.font_path, opt.fontsize)
+train_dataset = dataset.lmdbDataset(root=opt.trainroot)
 assert train_dataset
 if not opt.random_sample:
     sampler = dataset.randomSequentialSampler(train_dataset, opt.batchSize)
@@ -75,20 +71,13 @@ train_loader = torch.utils.data.DataLoader(
     shuffle=True, sampler=sampler,
     num_workers=int(opt.workers),
     collate_fn=dataset.alignCollate(imgH=opt.imgH, imgW=opt.imgW, keep_ratio=opt.keep_ratio))
-
-if opt.val_list is not None:
-    val_dataset = dataset.textDataset(opt.val_list, opt.font_path, opt.fontsize)
-    assert val_dataset
-    val_loader = torch.utils.data.DataLoader(
-        val_dataset, batch_size=10,
-        shuffle=False, sampler=None,
-        num_workers=int(opt.workers),
-        collate_fn=dataset.alignCollate(imgH=opt.imgH, imgW=opt.imgW, keep_ratio=opt.keep_ratio))
+test_dataset = dataset.lmdbDataset(
+    root=opt.valroot, transform=dataset.resizeNormalize((100, 32)))
 
 nclass = len(keys.alphabet) + 1
 nc = 1
 
-converter = utils.strLabelConverter(keys.alphabet, ignore_case=False)
+converter = utils.strLabelConverter(keys.alphabet)
 criterion = CTCLoss()
 
 
@@ -104,31 +93,43 @@ def weights_init(m):
 
 crnn = crnn.CRNN(opt.imgH, nc, nclass, opt.nh)
 crnn.apply(weights_init)
+if opt.crnn != '':
+    if not opt.resume:
+        print('loading pretrained model from %s' % opt.crnn)
+        pretrained_dict = torch.load(opt.crnn)
+        model_dict = crnn.state_dict()
+
+        pretrained_load_dict = dict()
+        for k,v in pretrained_dict.items():
+            if "rnn" in k:
+                print('not init:',k)
+                continue
+            pretrained_load_dict[k] = v
+
+        #pretrained_dict = {k:v for k,v in pretrained_dict.items() if k in model_dict}
+        model_dict.update(pretrained_load_dict)
+        crnn.load_state_dict(model_dict)
+    else:
+        print('resume from %s' % opt.crnn)
+        pretrained_dict = torch.load(opt.crnn)
+        pretrained_load_dict = dict()
+        for k,v in pretrained_dict.items():
+            new_k = k.replace('module.','')
+            pretrained_load_dict[new_k]=v
+
+        crnn.load_state_dict(pretrained_load_dict)
+
+print(crnn)
 
 image = torch.FloatTensor(opt.batchSize, 3, opt.imgH, opt.imgH)
 text = torch.IntTensor(opt.batchSize * 5)
 length = torch.IntTensor(opt.batchSize)
+
 if opt.cuda:
     crnn.cuda()
     crnn = torch.nn.DataParallel(crnn, device_ids=range(opt.ngpu))
     image = image.cuda()
     criterion = criterion.cuda()
-
-if opt.crnn != '':
-    print('loading pretrained model from %s' % opt.crnn)
-    pretrained_dict = torch.load(opt.crnn)
-    model_dict = crnn.state_dict()
-
-    pretrained_load_dict = dict()
-    for k,v in pretrained_dict.items():
-        if "rnn.1" in k:
-            continue
-        pretrained_load_dict[k] = v
-
-    #pretrained_dict = {k:v for k,v in pretrained_dict.items() if k in model_dict}
-    model_dict.update(pretrained_load_dict)
-    crnn.load_state_dict(model_dict)
-print(crnn)
 
 image = Variable(image)
 text = Variable(text)
@@ -147,13 +148,15 @@ else:
     optimizer = optim.RMSprop(crnn.parameters(), lr=opt.lr)
 
 
-def val(net, data_loader, criterion, max_iter=100):
+def val(net, dataset, criterion, max_iter=100):
     print('Start val')
 
     for p in crnn.parameters():
         p.requires_grad = False
 
     net.eval()
+    data_loader = torch.utils.data.DataLoader(
+        dataset, shuffle=True, batch_size=opt.batchSize, num_workers=int(opt.workers))
     val_iter = iter(data_loader)
 
     i = 0
@@ -170,26 +173,27 @@ def val(net, data_loader, criterion, max_iter=100):
         t, l = converter.encode(cpu_texts)
         utils.loadData(text, t)
         utils.loadData(length, l)
-
         preds = crnn(image)
         preds_size = Variable(torch.IntTensor([preds.size(0)] * batch_size))
         cost = criterion(preds, text, preds_size, length) / batch_size
         loss_avg.add(cost)
-
         _, preds = preds.max(2)
-        #preds = preds.squeeze(2)
+        #preds = preds.squeeze()
         preds = preds.transpose(1, 0).contiguous().view(-1)
         sim_preds = converter.decode(preds.data, preds_size.data, raw=False)
         for pred, target in zip(sim_preds, cpu_texts):
             if pred == target.lower():
                 n_correct += 1
 
-    #raw_preds = converter.decode(preds.data, preds_size.data, raw=True)[:opt.n_test_disp]
-    for pred, gt in zip(sim_preds, cpu_texts):
-        print(pred)
-        print(gt)
-        print('-' * 20)
-        #print('%-20s => %-20s, gt: %-20s' % (raw_pred, pred, gt))
+    raw_preds = converter.decode(preds.data, preds_size.data, raw=True)[:opt.n_test_disp]
+    for raw_pred, pred, gt in zip(raw_preds, sim_preds, cpu_texts):
+        try:
+            print(pred)
+            print(gt)
+            print('-' * 20)
+        except Exception as e:
+            print('cannot print:',str(e))
+            continue
 
     accuracy = n_correct / float(max_iter * opt.batchSize)
     print('Test loss: %f, accuray: %f' % (loss_avg.val(), accuracy))
@@ -214,6 +218,7 @@ def trainBatch(net, criterion, optimizer):
 
 
 for epoch in range(opt.niter):
+    val(crnn, test_dataset, criterion)
     train_iter = iter(train_loader)
     i = 0
     while i < len(train_loader):
@@ -226,15 +231,14 @@ for epoch in range(opt.niter):
         i += 1
 
         if i % opt.displayInterval == 0:
-            print('[%d/%d][%d/%d] Loss: %f' %
-                  (epoch, opt.niter, i, len(train_loader), loss_avg.val()))
+            print('[%d/%d][%d/%d] lr:%.5f, Loss: %f' %
+                  (epoch, opt.niter, i, len(train_loader), optimizer.param_groups[-1]['lr'], loss_avg.val()))
             loss_avg.reset()
+
+        if i % opt.valInterval == 0:
+            val(crnn, test_dataset, criterion)
 
         # do checkpointing
         if i % opt.saveInterval == 0:
             torch.save(
                 crnn.state_dict(), '{0}/netCRNN_{1}_{2}.pth'.format(opt.experiment, epoch, i))
-
-        # do validation
-        if opt.val_list is not None and i % opt.valInterval == 0:
-            val(crnn, val_loader, criterion)

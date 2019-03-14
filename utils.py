@@ -42,13 +42,15 @@ class strLabelConverter(object):
         if isinstance(text, str):
             text = [
                 self.dict[char.lower() if self._ignore_case else char]
-                for char in text.decode('gbk')
+                for char in text.decode('utf-8')
             ]
             length = [len(text)]
         elif isinstance(text, collections.Iterable):
+            text = [s.decode('utf-8') for s in text]
             length = [len(s) for s in text]
             text = ''.join(text)
-            text, _ = self.encode(text.encode('gbk'))
+            text, _ = self.encode(text.encode('utf-8'))
+          
         return (torch.IntTensor(text), torch.IntTensor(length))
 
     def decode(self, t, length, raw=False):
@@ -88,6 +90,52 @@ class strLabelConverter(object):
                 index += l
             return texts
 
+    def decode_test(self, t, length, probs=None, raw=False, threshold=0.6):
+        """Decode encoded texts back into strs.
+
+        Args:
+            torch.IntTensor [length_0 + length_1 + ... length_{n - 1}]: encoded texts.
+            torch.IntTensor [n]: length of each text.
+
+        Raises:
+            AssertionError: when the texts and its length does not match.
+
+        Returns:
+            text (str or list of str): texts to convert.
+        """
+        if length.numel() == 1:
+            length = length[0]
+            assert t.numel() == length, "text with length: {} does not match declared length: {}".format(t.numel(), length)
+            if raw:
+                return ''.join([self.alphabet[i - 1] for i in t])
+            else:
+                char_list = []
+                score = 1.
+                for i in range(length):
+                    if t[i] != 0 and (not (i > 0 and t[i - 1] == t[i])):
+                        char_prob = probs[i,t[i]]
+                        #print(self.alphabet[t[i]-1],char_prob)
+                        if score > char_prob:
+                            score = char_prob
+                        char_list.append(self.alphabet[t[i] - 1])
+                final_string = ''.join(char_list)
+                print(final_string)
+                print(score)
+                if score < threshold:
+                    final_string = final_string +'-'*10
+                return final_string
+        else:
+            # batch mode
+            assert t.numel() == length.sum(), "texts with length: {} does not match declared length: {}".format(t.numel(), length.sum())
+            texts = []
+            index = 0
+            for i in range(length.numel()):
+                l = length[i]
+                texts.append(
+                    self.decode_test(
+                        t[index:index + l], torch.IntTensor([l]), probs=probs[i], raw=raw, threshold=threshold))
+                index += l
+            return texts
 
 class averager(object):
     """Compute average for `torch.Variable` and `torch.Tensor`. """

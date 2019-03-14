@@ -5,6 +5,7 @@ import torch
 import torch.backends.cudnn as cudnn
 import torch.optim as optim
 import torch.utils.data
+import torch.nn.functional as F
 from torch.autograd import Variable
 import numpy as np
 from warpctc_pytorch import CTCLoss
@@ -19,44 +20,22 @@ sys.setdefaultencoding('utf8')
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--val_list', type=str, default=None, help='val text data list')
+parser.add_argument('--valroot', type=str, default=None, help='val text data list')
 parser.add_argument('--workers', type=int, help='number of data loading workers', default=2)
 parser.add_argument('--batchSize', type=int, default=64, help='input batch size')
 parser.add_argument('--imgH', type=int, default=32, help='the height of the input image to network')
 parser.add_argument('--imgW', type=int, default=100, help='the width of the input image to network')
 parser.add_argument('--nh', type=int, default=256, help='size of the lstm hidden state')
-parser.add_argument('--niter', type=int, default=25, help='number of epochs to train for')
-parser.add_argument('--lr', type=float, default=0.01, help='learning rate for Critic, default=0.00005')
-parser.add_argument('--beta1', type=float, default=0.5, help='beta1 for adam. default=0.5')
 parser.add_argument('--cuda', action='store_true', help='enables cuda')
 parser.add_argument('--ngpu', type=int, default=1, help='number of GPUs to use')
 parser.add_argument('--crnn', default='', help="path to crnn (to continue training)")
-parser.add_argument('--alphabet', type=str, default='0123456789abcdefghijklmnopqrstuvwxyz')
-parser.add_argument('--experiment', default=None, help='Where to store samples and models')
 parser.add_argument('--displayInterval', type=int, default=500, help='Interval to be displayed')
 parser.add_argument('--n_test_disp', type=int, default=10, help='Number of samples to display when test')
-parser.add_argument('--valInterval', type=int, default=500, help='Interval to be displayed')
-parser.add_argument('--saveInterval', type=int, default=500, help='Interval to be displayed')
-parser.add_argument('--adam', action='store_true', help='Whether to use adam (default is rmsprop)')
-parser.add_argument('--adadelta', action='store_true', help='Whether to use adadelta (default is rmsprop)')
 parser.add_argument('--keep_ratio', action='store_true', help='whether to keep ratio for image resize')
-parser.add_argument('--random_sample', action='store_true', help='whether to sample the dataset with random sampler')
-parser.add_argument('--font_path', help='path to font, multi fonts is seperated by ,')
-parser.add_argument('--fontsize', type=str, default="35-42", help='font size range')
 
 opt = parser.parse_args()
 print(opt)
 
-if opt.experiment is None:
-    opt.experiment = 'expr'
-if not os.path.exists(opt.experiment):
-    os.makedirs(opt.experiment)
-
-opt.manualSeed = random.randint(1, 10000)  # fix seed
-print("Random Seed: ", opt.manualSeed)
-random.seed(opt.manualSeed)
-np.random.seed(opt.manualSeed)
-torch.manual_seed(opt.manualSeed)
 
 cudnn.benchmark = True
 
@@ -64,36 +43,28 @@ if torch.cuda.is_available() and not opt.cuda:
     print("WARNING: You have a CUDA device, so you should probably run with --cuda")
 
 
-val_dataset = dataset.textDataset(opt.val_list, opt.font_path, opt.fontsize)
+val_dataset = dataset.lmdbDataset(
+    root=opt.valroot, transform=dataset.resizeNormalize((100, 32)))
 assert val_dataset
-val_loader = torch.utils.data.DataLoader(
-    val_dataset, batch_size=10,
-    shuffle=False, sampler=None,
-    num_workers=int(opt.workers),
-    collate_fn=dataset.alignCollate(imgH=opt.imgH, imgW=opt.imgW, keep_ratio=opt.keep_ratio))
 
 nclass = len(keys.alphabet) + 1
 nc = 1
 
-converter = utils.strLabelConverter(keys.alphabet, ignore_case=False)
+converter = utils.strLabelConverter(keys.alphabet, ignore_case=True)
 criterion = CTCLoss()
 
 
-# custom weights initialization called on crnn
-def weights_init(m):
-    classname = m.__class__.__name__
-    if classname.find('Conv') != -1:
-        m.weight.data.normal_(0.0, 0.02)
-    elif classname.find('BatchNorm') != -1:
-        m.weight.data.normal_(1.0, 0.02)
-        m.bias.data.fill_(0)
-
-
 crnn = crnn.CRNN(opt.imgH, nc, nclass, opt.nh)
-crnn.apply(weights_init)
 if opt.crnn != '':
     print('loading pretrained model from %s' % opt.crnn)
-    crnn.load_state_dict(torch.load(opt.crnn))
+    pretrained_dict = torch.load(opt.crnn)
+    pretrained_load_dict = dict()
+    for k,v in pretrained_dict.items():
+        new_k = k.replace('module.','')
+        pretrained_load_dict[new_k]=v
+
+    crnn.load_state_dict(pretrained_load_dict)
+
 print(crnn)
 
 image = torch.FloatTensor(opt.batchSize, 3, opt.imgH, opt.imgH)
@@ -113,17 +84,20 @@ length = Variable(length)
 loss_avg = utils.averager()
 
 
-def val(net, data_loader, criterion, max_iter=100):
+def val(net, dataset, criterion, max_iter=100):
     print('Start val')
 
     for p in crnn.parameters():
         p.requires_grad = False
 
     net.eval()
+    data_loader = torch.utils.data.DataLoader(
+        dataset, shuffle=False, batch_size=opt.batchSize, num_workers=int(opt.workers))
     val_iter = iter(data_loader)
 
     i = 0
     n_correct = 0
+    n_count = 0
     loss_avg = utils.averager()
 
     max_iter = min(max_iter, len(data_loader))
@@ -137,16 +111,21 @@ def val(net, data_loader, criterion, max_iter=100):
         utils.loadData(text, t)
         utils.loadData(length, l)
 
-        preds = crnn(image)
+        preds = crnn(image) # Time*Batchsize*Class
+        probs = F.softmax(preds,dim=2) # Time*Batchsize*Class
+        probs = probs.transpose(1,0).contiguous()
         preds_size = Variable(torch.IntTensor([preds.size(0)] * batch_size))
         cost = criterion(preds, text, preds_size, length) / batch_size
         loss_avg.add(cost)
 
-        _, preds = preds.max(2)
+        _, preds = preds.max(2) # Time*Batchsize*1
         #preds = preds.squeeze(2)
-        preds = preds.transpose(1, 0).contiguous().view(-1)
-        sim_preds = converter.decode(preds.data, preds_size.data, raw=False)
+        preds = preds.transpose(1, 0).contiguous().view(-1) # Batchsize*Time
+        sim_preds = converter.decode_test(preds.data, preds_size.data, probs=probs, raw=False, threshold=0.6)
         for pred, target in zip(sim_preds, cpu_texts):
+            if len(pred)>=10:
+                continue
+            n_count += 1
             if pred == target.lower():
                 n_correct += 1
 
@@ -157,9 +136,10 @@ def val(net, data_loader, criterion, max_iter=100):
             print('-'*20)
             #print('%-20s => %-20s, gt: %-20s' % (raw_pred, pred, gt))
 
-    accuracy = n_correct / float(max_iter * opt.batchSize)
-    print('Test loss: %f, accuray: %f' % (loss_avg.val(), accuracy))
+    accuracy = float(n_correct) / n_count
+
+    print('Test loss: %f, accuray: %f(%d/%d)' % (loss_avg.val(), accuracy,n_correct,n_count))
 
 
 
-val(crnn, val_loader, criterion)
+val(crnn, val_dataset, criterion, 100000000)
