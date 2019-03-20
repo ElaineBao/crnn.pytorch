@@ -28,8 +28,6 @@ parser.add_argument('--nh', type=int, default=256, help='size of the lstm hidden
 parser.add_argument('--niter', type=int, default=25, help='number of epochs to train for')
 parser.add_argument('--lr', type=float, default=0.01, help='learning rate for Critic, default=0.00005')
 parser.add_argument('--beta1', type=float, default=0.5, help='beta1 for adam. default=0.5')
-parser.add_argument('--cuda', action='store_true', help='enables cuda')
-parser.add_argument('--ngpu', type=int, default=1, help='number of GPUs to use')
 parser.add_argument('--crnn', default='', help="path to crnn (to continue training)")
 parser.add_argument('--alphabet', type=str, default='0123456789abcdefghijklmnopqrstuvwxyz')
 parser.add_argument('--experiment', default=None, help='Where to store samples and models')
@@ -44,6 +42,11 @@ parser.add_argument('--keep_ratio', action='store_true', help='whether to keep r
 parser.add_argument('--random_sample', action='store_true', help='whether to sample the dataset with random sampler')
 opt = parser.parse_args()
 print(opt)
+
+nclass = len(keys.alphabet) + 1
+nc = 1
+crnn = crnn.CRNN(opt.imgH, nc, nclass)
+crnn = torch.nn.DataParallel(crnn).cuda()
 
 if opt.experiment is None:
     opt.experiment = 'expr'
@@ -74,8 +77,6 @@ train_loader = torch.utils.data.DataLoader(
 test_dataset = dataset.lmdbDataset(
     root=opt.valroot, transform=dataset.resizeNormalize((100, 32)))
 
-nclass = len(keys.alphabet) + 1
-nc = 1
 
 converter = utils.strLabelConverter(keys.alphabet)
 criterion = CTCLoss()
@@ -91,7 +92,6 @@ def weights_init(m):
         m.bias.data.fill_(0)
 
 
-crnn = crnn.CRNN(opt.imgH, nc, nclass)
 crnn.apply(weights_init)
 if opt.crnn != '':
     if not opt.resume:
@@ -125,11 +125,8 @@ image = torch.FloatTensor(opt.batchSize, 3, opt.imgH, opt.imgH)
 text = torch.IntTensor(opt.batchSize * 5)
 length = torch.IntTensor(opt.batchSize)
 
-if opt.cuda:
-    crnn.cuda()
-    crnn = torch.nn.DataParallel(crnn, device_ids=range(opt.ngpu))
-    image = image.cuda()
-    criterion = criterion.cuda()
+image = image.cuda()
+criterion = criterion.cuda()
 
 image = Variable(image)
 text = Variable(text)
@@ -171,6 +168,7 @@ def val(net, dataset, criterion):
         utils.loadData(text, t)
         utils.loadData(length, l)
         preds = crnn(image)
+        preds = preds.permute(1, 0, 2)
         preds_size = Variable(torch.IntTensor([preds.size(0)] * batch_size))
         cost = criterion(preds, text, preds_size, length) / batch_size
         loss_avg.add(cost)
@@ -183,7 +181,7 @@ def val(net, dataset, criterion):
               (i, max_iter, cost, char_accuracy, whole_accuracy))
         display_count = 0
         for pred, target in zip(sim_preds, cpu_texts):
-            print('%-20s, gt: %-20s' % (pred.encode('utf-8'), target.encode('utf-8')))
+            print('pred: %-20s, gt: %-20s' % (pred.encode('utf-8'), target.encode('utf-8')))
             display_count += 1
             if display_count >opt.n_test_disp:
                 break
@@ -199,6 +197,7 @@ def trainBatch(net, criterion, optimizer, epoch, batch_idx, batch_num, decode=Tr
     utils.loadData(length, l)
 
     preds = net(image)
+    preds = preds.permute(1, 0, 2)
     preds_size = Variable(torch.IntTensor([preds.size(0)] * batch_size))
     cost = criterion(preds, text, preds_size, length) / batch_size
 
@@ -257,9 +256,15 @@ def compute_accuracy(ground_truth, predictions):
 
 
 for epoch in range(opt.niter):
-    val(crnn, test_dataset, criterion)
     train_iter = iter(train_loader)
     for i in range(len(train_loader)):
+        if i % opt.valInterval == 0:
+            val(crnn, test_dataset, criterion)
+
+        if i % opt.saveInterval == 0:
+            torch.save(
+                crnn.state_dict(), '{0}/netCRNN_{1}_{2}.pth'.format(opt.experiment, epoch, i))
+
         for p in crnn.parameters():
             p.requires_grad = True
         crnn.train()
@@ -267,10 +272,3 @@ for epoch in range(opt.niter):
         cost = trainBatch(crnn, criterion, optimizer, epoch, i, len(train_loader))
         loss_avg.add(cost)
 
-        if i % opt.valInterval == 0:
-            val(crnn, test_dataset, criterion)
-
-        # do checkpointing
-        if i % opt.saveInterval == 0:
-            torch.save(
-                crnn.state_dict(), '{0}/netCRNN_{1}_{2}.pth'.format(opt.experiment, epoch, i))

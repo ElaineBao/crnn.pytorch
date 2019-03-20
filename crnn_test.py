@@ -26,8 +26,6 @@ parser.add_argument('--batchSize', type=int, default=64, help='input batch size'
 parser.add_argument('--imgH', type=int, default=32, help='the height of the input image to network')
 parser.add_argument('--imgW', type=int, default=100, help='the width of the input image to network')
 parser.add_argument('--nh', type=int, default=256, help='size of the lstm hidden state')
-parser.add_argument('--cuda', action='store_true', help='enables cuda')
-parser.add_argument('--ngpu', type=int, default=1, help='number of GPUs to use')
 parser.add_argument('--crnn', default='', help="path to crnn (to continue training)")
 parser.add_argument('--displayInterval', type=int, default=500, help='Interval to be displayed')
 parser.add_argument('--n_test_disp', type=int, default=10, help='Number of samples to display when test')
@@ -53,8 +51,8 @@ nc = 1
 converter = utils.strLabelConverter(keys.alphabet, ignore_case=True)
 criterion = CTCLoss()
 
-
 crnn = crnn.CRNN(opt.imgH, nc, nclass, opt.nh)
+crnn = torch.nn.DataParallel(crnn).cuda()
 if opt.crnn != '':
     print('loading pretrained model from %s' % opt.crnn)
     pretrained_dict = torch.load(opt.crnn)
@@ -71,10 +69,8 @@ image = torch.FloatTensor(opt.batchSize, 3, opt.imgH, opt.imgH)
 text = torch.IntTensor(opt.batchSize * 5)
 length = torch.IntTensor(opt.batchSize)
 
-if opt.cuda:
-    crnn.cuda()
-    image = image.cuda()
-    criterion = criterion.cuda()
+image = image.cuda()
+criterion = criterion.cuda()
 
 image = Variable(image)
 text = Variable(text)
@@ -112,6 +108,7 @@ def val(net, dataset, criterion, max_iter=100):
         utils.loadData(length, l)
 
         preds = crnn(image) # Time*Batchsize*Class
+        preds = preds.permute(1, 0, 2)
         probs = F.softmax(preds,dim=2) # Time*Batchsize*Class
         probs = probs.transpose(1,0).contiguous()
         preds_size = Variable(torch.IntTensor([preds.size(0)] * batch_size))

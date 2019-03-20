@@ -52,6 +52,7 @@ class CRNN(nn.Module):
         conv = conv.squeeze(2) # batchsize x 512 x 25
         conv = conv.permute(2, 0, 1)  # 25 x batchsize x 512
         output = self.embedding(conv) # 25 x batchsize x class_num
+        output = output.permute(1,0,2)  # batchsize x 25 x class_num  in order to support multi-gpu
 
         return output
 
