@@ -177,7 +177,7 @@ def val(net, dataset, criterion):
         sim_preds = converter.decode(preds.data, preds_size.data, raw=False)
         char_accuracy, whole_accuracy = compute_accuracy(cpu_texts, sim_preds)
 
-        print('[%d/%d] val_loss: %.5f, char_accuracy:  %.5f, whole_accuracy: %.5f' %
+        print('[%d/%d] val_loss: %.5f, char_accuracy:  %f, whole_accuracy: %f' %
               (i, max_iter, cost, char_accuracy, whole_accuracy))
         display_count = 0
         for pred, target in zip(sim_preds, cpu_texts):
@@ -207,7 +207,7 @@ def trainBatch(net, criterion, optimizer, epoch, batch_idx, batch_num, decode=Tr
         sim_preds = converter.decode(preds.data, preds_size.data, raw=False)
         char_accuracy, whole_accuracy = compute_accuracy(cpu_texts,sim_preds)
 
-        print('[%d][%d/%d] lr:%.5f, train_loss: %.5f, char_accuracy:  %.5f, whole_accuracy: %.5f' %
+        print('[%d][%d/%d] lr:%.5f, train_loss: %.5f, char_accuracy:  %f, whole_accuracy: %f' %
               (epoch, batch_idx, batch_num, optimizer.param_groups[-1]['lr'], cost, char_accuracy, whole_accuracy))
 
 
@@ -227,7 +227,8 @@ def compute_accuracy(ground_truth, predictions):
 
     for index, label in enumerate(ground_truth):
         prediction = predictions[index]
-        if label == prediction:
+        label = label.decode('utf-8')
+        if label.lower() == prediction.lower():
             whole_accuracy.append(1)
         else:
             whole_accuracy.append(0)
@@ -236,19 +237,18 @@ def compute_accuracy(ground_truth, predictions):
         correct_count = 0
         try:
             for i, tmp in enumerate(label):
-                if tmp == prediction[i]:
+                if tmp.lower() == prediction[i].lower():
                     correct_count += 1
         except IndexError:
             continue
         finally:
             try:
-                char_accuracy.append(correct_count / total_count)
+                char_accuracy.append(float(correct_count) / total_count)
             except ZeroDivisionError:
                 if len(prediction) == 0:
                     char_accuracy.append(1)
                 else:
                     char_accuracy.append(0)
-
     char_accuracy = np.mean(np.array(char_accuracy).astype(np.float32), axis=0)
     whole_accuracy = np.mean(np.array(whole_accuracy).astype(np.float32), axis=0)
 
@@ -271,4 +271,3 @@ for epoch in range(opt.niter):
 
         cost = trainBatch(crnn, criterion, optimizer, epoch, i, len(train_loader))
         loss_avg.add(cost)
-
